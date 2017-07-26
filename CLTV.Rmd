@@ -1,0 +1,589 @@
+---
+title: "Project_Customer_Life_Time_Value"
+output: 
+  html_document:
+    theme: paper
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    fig_width: 5
+    fig_height: 5
+---
+
+#### Importing the data
+
+```{r}
+library(gam)
+library(dplyr)
+library(plyr)
+library(randomForest)
+library(pROC)
+library(MASS)
+library(caret)
+library(ridge)
+# Import starting data
+transactional.df <- read.csv("ltv.csv", header=TRUE)
+```
+
+#### Variables present in the base data set
+
+
+```{r}
+# Getting all users id
+userid.vector <- unique(transactional.df)
+
+
+classMetrics <- function(score, y, cutoff, 
+                         type = c("all", "accuracy", "sensitivity", 
+                                  "specificity", "ppv", "npv", "precision", 
+                                  "recall")) {
+  # This command throws an error if the user specifies a "type" that
+  # isn't supported by this function
+  type <- match.arg(type, several.ok = TRUE)
+  
+  # Edit me
+  #Getting all the observed values
+  observed <- y
+  
+  #Creating a vector for the predicted values
+  predicted <- rep(0,length(score))
+  
+  #Setting the value for the cut off
+  predicted[score >= cutoff] <- 1
+  
+  #Generating the confidence matrix
+  conf.mat <- table(factor(predicted, levels = c(0,1)),factor(observed,levels = c(0,1)))
+  
+  #Creating a blank data frame
+  perf <- data.frame(value=numeric())
+  
+  #Using i as index for creating the return data frame
+  i<-1
+  rownames.vector <- NA
+  #Getting the True Positive, True Negative, False Positive and False negative value
+  TP <- sum(observed==1 & predicted==1)
+  TN <- sum(observed==0 & predicted==0)
+  FP <- sum(observed==0 & predicted==1)
+  FN <- sum(observed==1 & predicted==0)
+  
+  #Setting value based on option sent
+  if(type == "all" || type%in%"accuracy") {
+    rownames.vector[i] <- "accuracy"
+    i<-i+1
+    value <- sum(observed==predicted) / length(observed)
+    perf <- rbind(perf,round(value,7))
+  }
+  if(type == "all" || type%in%"sensitivity") {
+    rownames.vector[i] <- "sensitivity"
+    i<-i+1
+    value <- TP / (TP + FN)
+    perf <- rbind(perf,round(value,7))
+  }
+  if(type == "all" || type%in%"specificity") {
+    rownames.vector[i] <- "specificity"
+    i<-i+1
+    value <- TN / (TN +FP)
+    perf <- rbind(perf,round(value,7))
+  }
+    if(type == "all" || type%in%"ppv") {
+    rownames.vector[i] <- "ppv"
+    i<-i+1
+    value <- TP / (TP +FP)
+    perf <- rbind(perf,round(value,7))
+    }
+  if(type == "all" || type%in%"npv") {
+    rownames.vector[i] <- "npv"
+    i<-i+1
+    value <- TN / (TN +FN)
+    perf <- rbind(perf,round(value,7))
+  }
+  if(type == "all" || type%in%"precision") {
+    rownames.vector[i] <- "precision"
+    i<-i+1
+    value <- TP / (TP +FP)
+    perf <- rbind(perf,round(value,7))
+  }
+    if(type == "all" || type%in%"recall") {
+    rownames.vector[i] <- "recall"
+    i<-i+1
+    value <- TP / (TP +FN)
+    perf <- rbind(perf,round(value,7))
+    }
+  row.names(perf) <- rownames.vector
+  colnames(perf) <- "value"
+  
+  #Returning the list with the required values
+  list(conf.mat = conf.mat,
+       perf = perf)
+  
+}
+
+plotClassMetrics <- function(score, y, xvar = NULL, yvar = c("accuracy", "sensitivity", 
+                                  "specificity", "ppv", "npv", "precision", 
+                                  "recall"),
+                             flip.x = FALSE) {
+  yvar <- match.arg(yvar)
+  
+  #If xvar variable is sent or not set 
+  if(is.null(xvar)) {
+    #Setting the label and the x axis if no x variabkle is chosen
+    x.axis <- score[order(score)]
+    x.label <- "score"
+    #Taking the length as the total number of values in this case
+    cutof.list <- seq(from = 0, to = 1, by = 1 / (length(score )-1))
+  } else {
+    #Setting the label and variable based on user input
+    x.label <- xvar
+    cutof.list <- seq(from = 0, to = 1, by = 1 / (100))
+  }
+    # cutof.list <- seq(from = 0, to = 1, by = 1 / (length(score )-1))
+    if(!is.null(xvar)) {
+      #If x is given start by filling empty values
+    x.axis <- rep(NA,length(cutof.list))
+    }
+    y.axis <- rep(NA,length(cutof.list))
+    #Iterate from each value of cutoff
+    for(i in 1:length(cutof.list)) {
+      if(!is.null(xvar)) {
+        # Set the x axis variable
+      x.axis[i] <- classMetrics(score, y, cutof.list[i], 
+                         xvar)$perf[xvar,]
+      }
+      #Set the y-axis variable
+      y.axis[i] <- classMetrics(score, y, cutof.list[i], 
+                         yvar)$perf[yvar,]
+      
+    }
+    #If user selecrts the flip the value
+    if(flip.x) {
+      x.axis <- 1 - x.axis
+      x.label <- paste("1 - ",xvar)
+      
+    }
+    #return the plot
+    ggplot(mapping = aes(x = x.axis, y = y.axis)) + geom_line(group = 1) + xlab(x.label) + ylab(yvar)
+  
+  # Edit me
+}
+
+# Function which takes two vectors useful for getting required values
+#Input variable 
+#   x : Vector from which we have to return the value
+#   y : Vector from which we compare the value
+#   type : type of comparison if either equal,maximum or minimum of the comparison
+get.req.value = function (x, y, type = c("equal","max","min"),equal.value = NA) {
+  # This command throws an error if the user specifies a "type" that
+  # isn't supported by this function
+  type <- match.arg(type, several.ok = TRUE)
+  #If parameter given as max calculate return the value of x with max value in y
+  if(type == "max") {
+    return(x[which.max(y)])
+    #If parameter given as min calculate return the value of x with min value in y
+  } else if(type == "min") {
+    return(x[which.min(y)])
+    #If parameter given as equal calculate return the value of x with equal value of the parameter equal.value
+  } else if(type=="equal") {
+    if(length(which(y==equal.value) > 0))
+    return(x[which(y==equal.value)])
+    else {
+      #Return NA if the equal value not present
+      return (NA)
+    }
+  }
+}
+
+summary.df <- ddply(transactional.df, ~ id,
+                    summarize,
+                    start.date = get.req.value (as.Date(date),status,"equal",equal.value = 0),
+                    end.date = get.req.value (as.Date(date),status,"equal",equal.value = 2),
+                    num.of.day = as.Date(end.date) - as.Date(start.date),
+                    gender = unique(gender),
+                    tot.pages = sum(pages) ,
+                    tot.onsite = sum(onsite),
+                    tot.entered = sum(entered),
+                    tot.completed = sum(completed),
+                    tot.holiday = sum(holiday),
+                    tot.logins = sum(status !=2),
+                    user.attritrated = !is.na(end.date),
+                    frequency = num.of.day / tot.logins,
+                    last.active.login.date = get.req.value(date[status!=2],date[status!=2],"max"),
+                    last.comp.order=get.req.value(date[completed!=0],date[completed!=0],"max"),
+                     avg.pages.transaction=tot.pages/tot.logins,
+                     avg.onsite.transaction=tot.onsite/tot.logins,
+                     min.pages=min(pages),
+                     max.pages=max(pages),
+                     min.onsite=min(onsite),
+                     max.onsite=max(onsite),
+                     sd.onsite=sd(onsite),
+                     sd.pages=sd(pages)
+                    )
+
+
+prediction.date <- '2014-12-31'
+#current.month<-month(prediction.date,label=TRUE, abbr=FALSE)
+
+#Setting the number of days for all people who didnt have an end date
+summary.df$num.of.day[is.na(summary.df$num.of.day)] <- (as.Date(prediction.date) -  as.Date(summary.df$start.date[which(is.na(summary.df$num.of.day))]))
+
+#Frequency
+summary.df$frequency[is.na(summary.df$frequency)] <- (as.Date(prediction.date) -  as.Date(summary.df$start.date[which(is.na(summary.df$frequency))])) / summary.df$tot.logins[which(is.na(summary.df$frequency))]
+
+#### Recency
+recency<-vector('numeric')
+recency<-
+ifelse(is.na(summary.df$end.date),
+       as.Date(prediction.date)-as.Date(summary.df$last.active.login.date),
+       as.Date(summary.df$end.date)-as.Date(summary.df$last.active.login.date))
+summary.df$recency<-recency
+#### Monetary
+revenue<-vector('numeric')
+for(i in 1: nrow(summary.df))
+{
+if(is.na(summary.df$end.date[i])){
+   revenue<-c(revenue, length(seq(from=as.Date(summary.df$start.date[i]), to=as.Date(prediction.date), by='month')))
+   }else{
+   revenue<-c(revenue, length(seq(from=as.Date(summary.df$start.date[i]), to=as.Date(summary.df$end.date[i]), by='month')))
+   }
+}
+summary.df$revenue<-revenue
+
+### Average number of pages visited per minute
+ave.no.pages.per.min<-vector('numeric')
+for(i in 1:nrow(summary.df) )
+{
+  ave.no.pages.per.min[i]<- summary.df$tot.pages[i]/summary.df$tot.onsite[i]
+}
+summary.df$ave.no.pages.per.min<-ave.no.pages.per.min
+## Average number of pages visited per hour
+ave.no.pages.per.hour<-vector('numeric')
+for(i in 1:nrow(summary.df) )
+{
+  ave.no.pages.per.hour[i]<- (summary.df$tot.pages[i]/summary.df$tot.onsite[i])*60
+}
+summary.df$ave.no.pages.per.hour<-ave.no.pages.per.hour
+### Ratio of holiday cards to total orders
+hol.card.to.total.orders<-vector('numeric')
+for(i in 1:nrow(summary.df) )
+{
+  hol.card.to.total.orders[i]<- summary.df$tot.holiday[i]/summary.df$tot.completed[i]
+}
+summary.df$hol.card.to.total.orders<-hol.card.to.total.orders
+### Ratio of orders completed to orders entered
+orders.completed.to.entered<- vector('numeric')
+for(i in 1:nrow(summary.df) )
+{
+  orders.completed.to.entered[i]<- summary.df$tot.completed[i]/summary.df$tot.entered[i]
+}
+summary.df$orders.completed.to.entered<-orders.completed.to.entered
+### Difference in total orders entered and total orders completed
+diff.entered.completed<-vector('numeric')
+for(i in 1:nrow(summary.df) )
+{
+  diff.entered.completed[i]<-summary.df$tot.entered[i]-summary.df$tot.completed[i]
+}
+summary.df$diff.entered.completed<-diff.entered.completed
+### Gap between last completed order and end subscription date
+diff.comp.endsub<-vector('numeric')
+diff.comp.endsub<-
+ifelse(is.na(summary.df$end.date),
+       as.Date(prediction.date)-as.Date(summary.df$last.comp.order),
+       as.Date(summary.df$end.date)-as.Date(summary.df$last.comp.order))
+summary.df$diff.comp.endsub<-diff.comp.endsub
+
+```
+
+### last three transactions calculation
+```{r}
+top<-function(x, num, c1,c2)
+  {
+sorted<-x[with(x,order(x[,c1],x[,c2],decreasing=T)),]
+splits<-split(sorted,sorted[,c1])
+df<-lapply(splits,head,num)
+do.call(rbind.data.frame,df)
+}
+first.3.transacions = top(transactional.df,3,1,4)
+```
+
+###
+```{r}
+# transactiondetails<-
+# first.3.transacions %>% group_by(id) %>%
+# summarize(avg.pages.per.transaction.last3 = mean(pages),avg.onsite.time.per.transaction.last3=mean(onsite),
+#           ratio.comp.entered.last3 = sum(completed)/sum(entered),
+#           diff.comp.entered.last3 = sum(entered)-sum(completed))
+
+
+transactiondetails <- ddply(first.3.transacions,"id",summarize,avg.pages.per.transaction.last3=mean(pages), avg.onsite.time.per.transaction.last3=mean(onsite),
+          ratio.comp.entered.last3 = sum(completed)/sum(entered),
+          diff.comp.entered.last3 = sum(entered)-sum(completed))
+
+summary.df = merge(transactiondetails,summary.df, by="id")
+
+```
+###Average gap between completed orders
+```{r}
+### Average gap between completed orders
+#detach(package:plyr)
+
+reqdata<-transactional.df[transactional.df$completed==1, ]
+avg.gap.comp=ddply(reqdata, ~id, summarize, .(as.Date(date)), avg.completed.order.gap = mean(diff(as.Date(date))))
+
+avg.gap.comp = subset(avg.gap.comp, select = c("id", "avg.completed.order.gap"))
+
+summary.df = merge(avg.gap.comp,summary.df, by="id")
+```
+##Average gap between visits 
+
+```{r}
+### Average gap between visits
+avg.gap.visit = ddply(transactional.df, ~id, summarise, .(as.Date(date)), avg.visits.gap = mean(diff(as.Date(date))))
+avg.gap.visit = subset(avg.gap.visit, select = c("id", "avg.visits.gap"))
+
+summary.df = merge(avg.gap.visit,summary.df, by="id")
+
+summary.df$avg.completed.order.gap[is.nan(summary.df$avg.completed.order.gap)] <- max(summary.df$avg.completed.order.gap,na.rm = T)
+
+summary.df$ratio.comp.entered.last3[is.nan(summary.df$ratio.comp.entered.last3)] <- 0
+# 
+summary.df$avg.visits.gap[is.na(summary.df$avg.visits.gap)] <- max(summary.df$avg.visits.gap,na.rm = T)
+
+#ZZZZZ
+
+
+summary.df <- summary.df[!is.na(summary.df$sd.onsite),]
+
+summary.df <- summary.df[!is.na(summary.df$sd.pages),]
+
+```
+
+```{r}
+#Random Forest Starts
+# tree.builder.df <- subset(summary.df, select = c("num.of.day","gender","tot.pages","tot.onsite","tot.entered","tot.completed","tot.holiday","tot.logins","user.attritrated","frequency","recency","revenue","ave.no.pages.per.min","ave.no.pages.per.hour","hol.card.to.total.orders","orders.completed.to.entered","diff.entered.completed","diff.comp.endsub"))
+
+tree.builder.df <- subset(summary.df, select = c("avg.visits.gap","avg.completed.order.gap" 
+,"avg.pages.per.transaction.last3","avg.onsite.time.per.transaction.last3","ratio.comp.entered.last3" ,"diff.comp.entered.last3",
+"num.of.day","gender","tot.pages", "tot.onsite","tot.entered"
+,"tot.completed","tot.holiday","tot.logins","user.attritrated","frequency","avg.pages.transaction" ,"avg.onsite.transaction"#,"min.pages" ,"max.pages","min.onsite"
+ , "max.onsite" ,"sd.onsite" , "sd.pages","recency","revenue","ave.no.pages.per.hour","hol.card.to.total.orders", "orders.completed.to.entered" ,"diff.entered.completed","diff.comp.endsub"        ))
+
+col <- colnames(tree.builder.df)[colSums(is.na(tree.builder.df)) > 0]
+
+# tree.builder.df <- subset(summary.df, select = c("recency","frequency","num.of.day","revenue","hol.card.to.total.orders"))
+
+# Randomly select 20% of the data to be held out for model validation
+test.indexes <- sample(1:nrow(tree.builder.df), 
+                       round(0.2 * nrow(tree.builder.df)))
+train.indexes <- setdiff(1:nrow(tree.builder.df), test.indexes)
+
+
+tree.builder.df.train <- tree.builder.df[train.indexes, ]
+tree.builder.df.test <- tree.builder.df[test.indexes,]
+
+
+attriation.rf <- randomForest(user.attritrated ~., data=tree.builder.df.train, mtry=6, importance=TRUE)
+
+# attriation.rf <- randomForest(user.attritrated ~ recency + frequency + num.of.day+revenue, data=tree.builder.df.train, mtry=4, importance=TRUE)
+
+attriation.predict.rf = predict(attriation.rf,newdata=tree.builder.df.test
+                                #,type = "prob"
+                                )
+y.value <- mapvalues(tree.builder.df.test$user.attritrated,c(TRUE,FALSE),c(1,0))
+
+roc.rf <- roc(as.numeric(y.value),attriation.predict.rf)
+plot(roc.rf)
+
+roc.rf$auc
+
+
+varImpPlot(attriation.rf)
+
+
+
+classMetrics(score = attriation.predict.rf,y = y.value, cutoff = 0.56,type = "all")
+```
+
+####### Task 2
+### Random Forest For Task 2
+```{r}
+# tree.builder.df <- subset(summary.df, select = c("num.of.day","gender","tot.pages","tot.onsite","tot.entered","tot.completed","tot.holiday","tot.logins","user.attritrated","frequency","recency","revenue","ave.no.pages.per.min","ave.no.pages.per.hour","hol.card.to.total.orders","orders.completed.to.entered","diff.entered.completed","diff.comp.endsub"))
+ 
+tree.builder.df <- subset(summary.df, select = c("avg.visits.gap","avg.completed.order.gap"
+,"avg.pages.per.transaction.last3","avg.onsite.time.per.transaction.last3","ratio.comp.entered.last3" ,"diff.comp.entered.last3","gender","frequency","avg.pages.transaction" ,"avg.onsite.transaction"#,"min.pages" ,"max.pages","min.onsite"
+, "max.onsite" ,"sd.onsite" , "sd.pages","recency","revenue","ave.no.pages.per.hour","hol.card.to.total.orders", "orders.completed.to.entered" ,"diff.entered.completed","diff.comp.endsub"        ))
+ 
+ 
+ 
+# tree.builder.df <- subset(summary.df, select = c("recency","frequency","num.of.day","revenue","hol.card.to.total.orders"))
+ 
+# Randomly select 20% of the data to be held out for model validation
+test.indexes <- sample(1:nrow(tree.builder.df),
+                       round(0.2 * nrow(tree.builder.df)))
+train.indexes <- setdiff(1:nrow(tree.builder.df), test.indexes)
+ 
+ 
+tree.builder.df.train <- tree.builder.df[train.indexes, ]
+tree.builder.df.test <- tree.builder.df[test.indexes,]
+ 
+ 
+revenue.rf <- randomForest(revenue ~., data=tree.builder.df.train, mtry=6, importance=TRUE)
+ 
+# attriation.rf <- randomForest(user.attritrated ~ recency + frequency + num.of.day+revenue, data=tree.builder.df.train, mtry=4, importance=TRUE)
+ 
+predict.rf = predict(revenue.rf,newdata=tree.builder.df.test
+                                #,type = "prob"
+                                )
+y.value <- mapvalues(tree.builder.df.test$user.attritrated,c(TRUE,FALSE),c(1,0))
+ 
+roc.rf <- roc(as.numeric(y.value),attriation.predict.rf)
+plot(roc.rf)
+ 
+roc.rf$auc
+ 
+ 
+varImpPlot(revenue.rf)
+ 
+classMetrics(score = attriation.predict.rf,y = y.value, cutoff = 0.56,type = "all")
+
+mean((tree.builder.df.test$revenue - predict(revenue.rf, tree.builder.df.test))^2)
+
+```
+
+### GAM model for 2nd question
+```{r}
+summ.df = summary.df
+summ.df<-data.frame(lapply(summary.df, function(x) as.numeric(as.character(x))))
+summ.df<-summ.df[,c(31,37,2,36,22,19,30)]
+
+listofpredictors<-names(summ.df)
+#Split data into test(30%) and train(70%)
+n = nrow(summ.df)
+trainIndex = sample(1:n, size = round(0.7*n), replace=FALSE)
+train = summ.df[trainIndex ,]
+test = summ.df[-trainIndex ,]
+
+#gam.formula <- formula(paste("user.attritrated ~ ", paste("poly(",listofpredictors[4,5,6], ", 3)", sep = "", collapse= " + ")))
+attrition.gam <- gam(revenue~s(frequency) +s(recency)+ s(avg.pages.transaction)+s(diff.entered.completed)+ s(avg.visits.gap)+s(diff.comp.endsub), data = train, df=5)
+
+par(mfrow = c(15,4))
+plot(attrition.gam, col = "forestgreen", lwd=3)
+mean((test$revenue - predict(attrition.gam, test))^2)
+
+```
+
+### LDA for classification in 1st Question
+```{r}
+lda.fit=MASS::lda(user.attritrated~., data=train, na.action=TRUE, CV=TRUE)
+conf.mat.lda = table(test$user.attritrated, fit$class)
+sum(diag(prop.table(conf.mat.lda)))
+```
+
+
+### KNN model for 2nd question
+```{r}
+#knn.fit = FNN::knn.reg(train, test=NULL, revenue, k=9, algorithm = c("kd_tree", "cover_tree", "brute"))
+knn.fit1 = caret::knnreg(train, train$revenue, k=4, na.action="pass")
+plot(test$revenue, predict(knn.fit1, test))
+
+mean((test$revenue - predict(knn.fit1, test))^2)
+```
+
+
+### Ridge Regression model for 2nd question
+```{r}
+ridge.fit = ridge::linearRidge(revenue~., data = train)
+mean((test$revenue - predict(ridge.fit, test))^2)
+```
+
+### Pair-Pair plot for highly significant predictors from RF for # 1st question
+```{r}
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+{
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- abs(cor(x, y))
+    txt <- format(c(r, 0.123456789), digits = digits)[1]
+    txt <- paste0(prefix, txt)
+    if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = pmax(1, cex.cor * r))
+}
+ 
+pairs(summary.df[,listofpredictors], lower.panel = panel.cor)
+
+```
+
+
+### Cross-validation check for different models
+```{r}
+options(warn=-1)  # To suppress warning messages
+smoothCV <- function(x, y, K = 10, df.min = 1, df.max = 10) {
+
+  set.seed(1)
+  data.stream <- data.frame(x, y)
+    mse.error.poly = 0
+    mse.error.cubic = 0
+    mse.error.smoothing = 0
+  
+  new.data.stream = data.stream[sample(nrow(data.stream)),]
+  data.rows = nrow(new.data.stream)
+  folds <- cut(seq(1, data.rows),breaks = K,labels = FALSE)
+  
+  dframe = NULL
+
+  for (df in df.min:df.max)
+  {
+    poly.fit = NULL
+    cubic.fit = NULL
+    smoothingspline.fit = NULL
+    mse.error.poly = 0
+    mse.error.cubic = 0
+    mse.error.smoothing = 0
+
+    for(j in 1:K) 
+    {
+    
+    index = which(folds == j, arr.ind = TRUE)
+    testData = new.data.stream[index, ]
+    trainData = new.data.stream[-index, ]  
+      
+    # MSE calculation for cubic spline fit for df greater than 2
+    if(df > 2)
+    {
+    cubic.fit =lm(y ~ bs(x,df=df), data = trainData) 
+    predict.cubic = predict(cubic.fit, testData)
+    mse.cubic = mean((testData$y - predict.cubic)^2) * nrow(testData) / nrow(new.data.stream)
+    mse.error.cubic =  mse.error.cubic + mse.cubic
+    } 
+    else
+    {
+     mse.error.cubic = NA 
+    }
+     
+    poly.fit = lm(y ~ poly(x, df), data = trainData)
+    predict.poly = predict(poly.fit, testData)
+    mse.poly = mean((testData$y - predict.poly)^2) * nrow(testData) / nrow(new.data.stream)
+    mse.error.poly = mse.error.poly + mse.poly
+    
+    if(df > 1)
+    {
+      smoothingspline.fit = smooth.spline(trainData$x,trainData$y, df = df) 
+      predict.smoothing = predict(smoothingspline.fit,testData$x)$y
+      mse.smooth = mean((testData$y - predict.smoothing)^2) * nrow(testData) / nrow(new.data.stream)
+      mse.error.smoothing =  mse.error.smoothing + mse.smooth
+    }
+    else
+    {
+      mse.error.smoothing = NA   
+    }
+    }
+
+    dframe = rbind(dframe, data.frame(df = df, method = "poly", cv.error = mean(mse.error.poly)))
+    dframe = rbind(dframe, data.frame(df = df, method = "cubic.spline", cv.error = mean(mse.error.cubic)))
+    dframe = rbind(dframe, data.frame(df = df, method = "smoothing.spline", cv.error = mean(mse.error.smoothing)))
+
+  } 
+   dframe 
+}
+
+smoothCV(summary.df$tot.holiday, summary.df$user.attritrated, K = 10, df.min = 1, df.max = 10)
+
+```
